@@ -1,0 +1,15 @@
+# Build artifacts
+.build/
+dist/
+
+# Generated app icon
+AppIcon.icns
+
+# macOS
+.DS_Store
+
+# Xcode / SwiftPM user state
+.swiftpm/
+*.xcodeproj/
+xcuserdata/
+Package.resolved
