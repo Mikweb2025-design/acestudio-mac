@@ -147,6 +147,7 @@ final class Store {
     // MARK: Startup / shutdown
 
     func bootstrap() {
+        if CommandLine.arguments.contains("--no-engine") { return }
         Task {
             _ = await Task.detached { HeavyServices.stopAll() }.value
             stoppedServices = HeavyServices.labels   // always brought back on exit

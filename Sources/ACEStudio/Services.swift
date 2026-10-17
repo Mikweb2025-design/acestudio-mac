@@ -5,7 +5,12 @@ import Darwin
 enum Paths {
     static let home = FileManager.default.homeDirectoryForCurrentUser
     static let aceDir = home.appendingPathComponent("ACE-Step-1.5")
-    static let library = home.appendingPathComponent("Music/ACE Studio")
+    /// `--library <folder>` points the app at another library (used for demo screenshots).
+    static let library: URL = {
+        let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "--library"), i + 1 < args.count { return URL(fileURLWithPath: args[i + 1]) }
+        return home.appendingPathComponent("Music/ACE Studio")
+    }()
     static let logs = home.appendingPathComponent("Library/Logs/ACEStudio")
     static let serverLog = logs.appendingPathComponent("acestep-server.log")
     static let uvCandidates = [home.appendingPathComponent(".local/bin/uv").path, "/opt/homebrew/bin/uv"]

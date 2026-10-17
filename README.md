@@ -6,6 +6,18 @@ keeps a browsable library of the generated tracks — entirely on your own machi
 
 Built for Apple Silicon and tuned to run 16 GB-safe (`MLX` DiT + VAE in fp16, LLM off, batch 1).
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/01-create.png" alt="Create a song in Simple mode: describe it and the AI writes lyrics and style" width="100%">
+</p>
+
+| Custom mode: your own style tags and lyrics | Library: AI cover art for every track |
+| :---: | :---: |
+| <img src="docs/screenshots/02-custom.png" alt="Custom mode" width="100%"> | <img src="docs/screenshots/03-library.png" alt="Library grid with AI covers" width="100%"> |
+
+> The screenshots use demo tracks and covers generated with FLUX.1-schnell on the IONOS AI Model Hub.
+
 ## Features
 
 - **Simple mode** — describe what you want (theme, energy, mood); an LLM writes the lyrics and a
