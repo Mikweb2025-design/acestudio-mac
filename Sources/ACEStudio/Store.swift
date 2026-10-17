@@ -13,7 +13,7 @@ struct SongDraft: Codable, Equatable {
     var instrumental = false
     var voice: Voice = .auto
     var duration: Double = 120
-    var language = "en"
+    var language = "auto"     // "auto": the lyrics follow the language of the request
     var bpm = 0              // 0 = auto
     var key = ""             // "" = auto
     var seed = ""            // "" = random
@@ -32,7 +32,7 @@ struct SongDraft: Codable, Equatable {
         instrumental = try c.decodeIfPresent(Bool.self, forKey: .instrumental) ?? false
         voice = try c.decodeIfPresent(Voice.self, forKey: .voice) ?? .auto
         duration = try c.decodeIfPresent(Double.self, forKey: .duration) ?? 120
-        language = try c.decodeIfPresent(String.self, forKey: .language) ?? "en"
+        language = try c.decodeIfPresent(String.self, forKey: .language) ?? "auto"
         bpm = try c.decodeIfPresent(Int.self, forKey: .bpm) ?? 0
         key = try c.decodeIfPresent(String.self, forKey: .key) ?? ""
         seed = try c.decodeIfPresent(String.self, forKey: .seed) ?? ""
@@ -233,23 +233,48 @@ final class Store {
                 }
                 if draft.bpm == 0, let b = s.bpm { draft.bpm = b }
                 if draft.key.isEmpty, let k = s.key, CreateOptions.keys.contains(k) { draft.key = k }
+                if draft.language == "auto", let l = Store.languageCode(s.language) { draft.language = l }
             } catch {
                 writeError = error.localizedDescription
             }
         }
     }
 
-    struct WrittenSong { var title: String?; var style: String?; var lyrics: String?; var bpm: Int?; var key: String? }
+    struct WrittenSong { var title: String?; var style: String?; var lyrics: String?; var bpm: Int?; var key: String?; var language: String? = nil }
 
     /// IONOS gpt-oss-120b when a key is set (follows genre and theme), else ACE-Step's own LM.
+    /// Last error of an added model, shown in Settings (the song still gets written by the fallback).
+    nonisolated(unsafe) static var lastWriterError: String?
+
     static func writeSong(_ d: SongDraft) async throws -> WrittenSong {
-        if IonosWriter.isEnabled, let s = try? await IonosWriter.write(d) {
-            return WrittenSong(title: s.title, style: s.style, lyrics: s.lyrics, bpm: s.bpm, key: s.key)
+        let chosen = UserDefaults.standard.string(forKey: "lyricsEngine") ?? "ionos"
+        if let p = ProviderStore.load().first(where: { $0.id.uuidString == chosen }) {
+            do {
+                let s = try await IonosWriter.write(d, provider: p)
+                lastWriterError = nil
+                return WrittenSong(title: s.title, style: s.style, lyrics: s.lyrics, bpm: s.bpm, key: s.key, language: s.language)
+            } catch {
+                lastWriterError = "\(p.label): \(error.localizedDescription)"
+            }
         }
+        if IonosWriter.isEnabled, let s = try? await IonosWriter.write(d) {
+            return WrittenSong(title: s.title, style: s.style, lyrics: s.lyrics, bpm: s.bpm, key: s.key, language: s.language)
+        }
+        let lang = d.language == "auto" ? "unknown" : d.language
         let q = Writer.query(description: d.description, style: d.style, title: d.title,
-                             voice: d.voice, language: d.language, instrumental: d.instrumental)
-        let s = try await Writer.write(query: q, language: d.language, instrumental: d.instrumental)
+                             voice: d.voice, language: lang, instrumental: d.instrumental)
+        let s = try await Writer.write(query: q, language: lang, instrumental: d.instrumental)
         return WrittenSong(title: nil, style: s.style, lyrics: s.lyrics, bpm: s.bpm, key: s.key)
+    }
+
+    /// The writer's language answer ("it", "Italian", "it-IT") as one of the app's codes.
+    static func languageCode(_ raw: String?) -> String? {
+        guard let r = raw?.lowercased().trimmingCharacters(in: .whitespaces), !r.isEmpty else { return nil }
+        let codes = CreateOptions.languages.map(\.0).filter { $0 != "auto" }
+        if let c = codes.first(where: { r.hasPrefix($0) }) { return c }
+        let names = ["italian": "it", "english": "en", "spanish": "es", "french": "fr", "german": "de",
+                     "portuguese": "pt", "japanese": "ja", "chinese": "zh"]
+        return names.first { r.contains($0.key) }?.value
     }
 
     private func autoTitle(from text: String) -> String {
@@ -302,6 +327,7 @@ final class Store {
                 }
                 if job.draft.bpm == 0, let b = s.bpm { job.draft.bpm = b }
                 if job.draft.key.isEmpty, let k = s.key { job.draft.key = k }
+                if job.draft.language == "auto", let l = Store.languageCode(s.language) { job.draft.language = l }
             }
             if !job.draft.instrumental {
                 job.draft.lyrics = LyricsFit.tagVoices(job.draft.lyrics, voice: job.draft.voice, style: job.draft.effectiveStyle)
@@ -373,7 +399,7 @@ final class Store {
                 ? "[Instrumental]" : s.lyrics,
             "audio_duration": s.duration,
             "inference_steps": s.steps,
-            "vocal_language": s.instrumental ? "unknown" : s.language,
+            "vocal_language": s.instrumental || s.language == "auto" ? "unknown" : s.language,
             "audio_format": "mp3",
         ]
         if s.bpm > 0 { p["bpm"] = s.bpm }

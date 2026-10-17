@@ -31,12 +31,13 @@ enum Writer {
         if !description.isEmpty { parts.append(description) }
         if !title.isEmpty { parts.append("song title: \"\(title)\"") }
         if let v = voice.styleTag, !instrumental { parts.append(v) }
-        parts.append(instrumental ? "instrumental, no vocals" : "lyrics in \(languageName(language))")
+        parts.append(instrumental ? "instrumental, no vocals"
+                     : language == "auto" ? "lyrics in the same language as this request" : "lyrics in \(languageName(language))")
         return parts.joined(separator: ", ")
     }
 
     static func write(query: String, language: String, instrumental: Bool) async throws -> Song {
-        let data = try await run(["query": query, "language": language, "instrumental": instrumental,
+        let data = try await run(["query": query, "language": language == "auto" ? "unknown" : language, "instrumental": instrumental,
                                   "temperature": 0.7, "top_p": 0.9, "repetition_penalty": 1.05])
         let song = try JSONDecoder().decode(Song.self, from: data)
         if !song.ok { throw EngineError.message(song.error ?? "Lyric writing failed") }
@@ -49,7 +50,7 @@ enum Writer {
     static func audioCodes(for d: SongDraft) async throws -> String {
         var input: [String: Any] = ["mode": "codes", "duration": d.duration, "style": d.effectiveStyle,
                                     "lyrics": d.instrumental ? "[Instrumental]" : d.lyrics,
-                                    "language": d.instrumental ? "unknown" : d.language]
+                                    "language": d.instrumental || d.language == "auto" ? "unknown" : d.language]
         if d.bpm > 0 { input["bpm"] = d.bpm }
         if !d.key.isEmpty { input["key"] = d.key }
         let data = try await run(input)

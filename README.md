@@ -28,8 +28,13 @@ Built for Apple Silicon and tuned to run 16 GB-safe (`MLX` DiT + VAE in fp16, LL
 - **Cover art** — deterministic procedural covers per track, plus optional AI cover generation.
 - **RAM-aware engine management** — the app pauses RAM-hungry background services (Qwen TTS, Jarvis)
   while the engine is running and restores them on quit, via a detached watchdog.
-- **Lyrics assistant** — optional IONOS AI Model Hub lyricist for higher-quality lyrics, with a
-  fallback to the ACE-Step built-in language model.
+- **Lyrics assistant** — writes lyrics and a genre-first style in the language of your description
+  (or the one you pick). Built in: IONOS AI Model Hub (Qwen3.5-397B, gpt-oss-120b as fallback), with a
+  final fallback to the ACE-Step built-in language model.
+- **Bring your own model** — in Settings → Lyrics → *Add model…* add Anthropic Claude, xAI Grok,
+  OpenRouter (including its free models), Groq, Google Gemini, Mistral, DeepSeek, OpenAI or any
+  OpenAI-compatible server (e.g. LM Studio). Load the model list from the service, test it, and pick it
+  as the writer. API keys are stored in the macOS Keychain.
 
 ## Requirements
 

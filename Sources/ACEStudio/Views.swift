@@ -184,7 +184,7 @@ enum CreateOptions {
                          "singer-songwriter", "ballad", "funk", "acoustic", "orchestral", "synthwave",
                          "r&b", "country", "piano", "electric guitar", "upbeat", "melancholic", "dreamy"]
     static let tags = ["[Intro]", "[Verse]", "[Pre-Chorus]", "[Chorus]", "[Bridge]", "[Solo]", "[Outro]"]
-    static let languages = [("it", "Italian"), ("en", "English"), ("es", "Spanish"), ("fr", "French"),
+    static let languages = [("auto", "Auto (from your description)"), ("it", "Italian"), ("en", "English"), ("es", "Spanish"), ("fr", "French"),
                             ("de", "German"), ("pt", "Portuguese"), ("ja", "Japanese"), ("zh", "Chinese")]
     static let keys = ["", "C major", "G major", "D major", "A major", "E major", "F major", "Bb major", "Eb major",
                        "A minor", "E minor", "D minor", "B minor", "C minor", "G minor", "F# minor"]
@@ -838,6 +838,8 @@ struct SettingsView: View {
     @AppStorage("restoreServicesOnQuit") var restoreServices = true
     @AppStorage("lyricsEngine") var lyricsEngine = "ionos"
     @State private var keyField = ""
+    @State private var providers = ProviderStore.load()
+    @State private var showAdd = false
 
     var body: some View {
         Form {
@@ -867,13 +869,27 @@ struct SettingsView: View {
             }
             Section {
                 Picker("Lyrics and style writer", selection: $lyricsEngine) {
-                    Text("IONOS gpt-oss-120b (recommended)").tag("ionos")
+                    Text("IONOS · Qwen3.5-397B (built-in)").tag("ionos")
+                    ForEach(providers) { p in Text(p.label).tag(p.id.uuidString) }
                     Text("ACE-Step built-in LLM (local)").tag("ace")
+                }
+                ForEach(providers) { p in
+                    HStack {
+                        Image(systemName: lyricsEngine == p.id.uuidString ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(lyricsEngine == p.id.uuidString ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                        Text(p.label).lineLimit(1)
+                        Spacer()
+                        Button("Remove", role: .destructive) { remove(p) }.controlSize(.small)
+                    }
+                }
+                Button("Add model…", systemImage: "plus.circle") { showAdd = true }
+                if let e = Store.lastWriterError {
+                    Label(e, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
                 }
             } header: {
                 Text("Lyrics")
             } footer: {
-                Text("IONOS follows the requested genre, theme and chorus (~6 s, requires the key). ACE's LLM is local but often ignores the request.")
+                Text("Add Claude, Grok, OpenRouter (free models), Groq, Gemini, Mistral, DeepSeek, OpenAI or any OpenAI-compatible server. If the chosen model fails, IONOS and then ACE's local LLM write the song.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Memory") {
@@ -887,8 +903,116 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 540)
+        .frame(width: 560)
         .padding()
+        .sheet(isPresented: $showAdd) {
+            AddModelSheet { p in
+                providers.append(p)
+                ProviderStore.save(providers)
+                lyricsEngine = p.id.uuidString
+            }
+        }
+    }
+
+    private func remove(_ p: LLMProvider) {
+        providers.removeAll { $0.id == p.id }
+        ProviderStore.save(providers)
+        SecretStore.save(p.keyAccount, "")
+        if lyricsEngine == p.id.uuidString { lyricsEngine = "ionos" }
+    }
+}
+
+/// Adds an LLM as lyrics writer: service, API key, model (loaded from the service), quick test.
+struct AddModelSheet: View {
+    let onSave: (LLMProvider) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var kind: ProviderKind = .anthropic
+    @State private var baseURL = ProviderKind.anthropic.baseURL
+    @State private var apiKey = ""
+    @State private var model = "claude-opus-5-5"
+    @State private var models: [String] = ProviderKind.anthropic.presetModels
+    @State private var freeOnly = true
+    @State private var status: String?
+    @State private var busy = false
+    private let id = UUID()
+
+    private var draft: LLMProvider { LLMProvider(id: id, kind: kind, baseURL: baseURL, model: model) }
+    private var shownModels: [String] { kind == .openrouter && freeOnly ? models.filter { $0.hasSuffix(":free") } : models }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Form {
+                Picker("Service", selection: $kind) {
+                    ForEach(ProviderKind.allCases) { Text($0.label).tag($0) }
+                }
+                .onChange(of: kind) { _, k in
+                    baseURL = k.baseURL
+                    models = k.presetModels
+                    model = k.presetModels.first ?? ""
+                    status = nil
+                }
+                TextField("Base URL", text: $baseURL).disabled(kind != .custom)
+                HStack {
+                    SecureField(kind.needsKey ? "API key" : "API key (optional)", text: $apiKey)
+                    if let u = kind.keyURL { Link("Get a key", destination: u).font(.caption) }
+                }
+                HStack {
+                    if shownModels.isEmpty {
+                        TextField("Model", text: $model, prompt: Text("Load the models or type an id"))
+                    } else {
+                        Picker("Model", selection: $model) {
+                            ForEach(shownModels, id: \.self) { Text($0).tag($0) }
+                        }
+                    }
+                    Button("Load models") { Task { await load() } }
+                        .disabled(busy || (kind.needsKey && apiKey.isEmpty))
+                }
+                if kind == .openrouter { Toggle("Only free models", isOn: $freeOnly) }
+                Text(kind.note).font(.caption).foregroundStyle(.secondary)
+                if let status { Text(status).font(.caption).foregroundStyle(status.hasPrefix("✓") ? .green : .orange) }
+            }
+            .formStyle(.grouped)
+            HStack {
+                if busy { ProgressView().controlSize(.small) }
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Test") { Task { await test() } }
+                    .disabled(busy || model.isEmpty || (kind.needsKey && apiKey.isEmpty))
+                Button("Save") {
+                    SecretStore.save(draft.keyAccount, apiKey)
+                    onSave(draft)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(model.isEmpty || (kind.needsKey && apiKey.isEmpty))
+            }
+            .padding()
+        }
+        .frame(width: 520)
+    }
+
+    private func load() async {
+        busy = true; defer { busy = false }
+        do {
+            let list = try await LLMClient.listModels(draft, key: apiKey)
+            models = list.isEmpty ? kind.presetModels : list
+            if !shownModels.contains(model) { model = shownModels.first ?? model }
+            status = "✓ \(list.count) models" + (kind == .openrouter ? " (\(list.filter { $0.hasSuffix(":free") }.count) free)" : "")
+        } catch {
+            status = error.localizedDescription
+        }
+    }
+
+    private func test() async {
+        busy = true; defer { busy = false }
+        let t0 = Date()
+        do {
+            let reply = try await LLMClient.complete(draft, key: apiKey, system: "Reply with JSON only.",
+                                                     user: "Write a two-line rhyming couplet about rain as {\"lyrics\": \"...\"}")
+            status = "✓ \(String(format: "%.1f", Date().timeIntervalSince(t0))) s · \(reply.replacingOccurrences(of: "\n", with: " ").prefix(90))"
+        } catch {
+            status = error.localizedDescription
+        }
     }
 }
 
