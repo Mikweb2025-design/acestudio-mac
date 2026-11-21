@@ -70,6 +70,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let t = value("--fill-style") { store.draft.style = t }
         if let t = value("--fill-lyrics") { store.draft.lyrics = t.replacingOccurrences(of: "\\n", with: "\n") }
         if let t = value("--fill-title") { store.draft.title = t }
+        // Automation: --make-song <request.json> renders one custom song headless, copies it, then quits.
+        if let req = value("--make-song") { makeSongAndQuit(req) }
         if args.contains("--play-first"), let t = store.tracks.first { store.toggle(t) }
         if let shot = value("--window-shot") {
             let delay = Double(value("--delay") ?? "") ?? 3
@@ -96,6 +98,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 do { try rep?.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: shot)) }
                 catch { NSLog("window-shot: write failed %@", "\(error)") }
             }
+        }
+    }
+
+    /// Request JSON: {"title","style","lyrics","duration","voice":"male|female|duet|auto","language","out","status"}.
+    /// Uses the normal custom-mode pipeline (voice tags, LM planning, engine), copies the mp3 to `out`,
+    /// writes a status JSON to `status` (ok, out, title, style, lyrics or error) and quits.
+    @MainActor private func makeSongAndQuit(_ path: String) {
+        struct Req: Decodable {
+            var title: String?, style: String, lyrics: String, duration: Double?
+            var voice: String?, language: String?, out: String, status: String?
+        }
+        func finish(_ obj: [String: Any], _ statusPath: String?) {
+            if let s = statusPath, let data = try? JSONSerialization.data(withJSONObject: obj) {
+                try? data.write(to: URL(fileURLWithPath: s))
+            }
+            NSApp.terminate(nil)
+        }
+        guard let data = FileManager.default.contents(atPath: path),
+              let req = try? JSONDecoder().decode(Req.self, from: data) else {
+            NSLog("make-song: unreadable request %@", path)
+            NSApp.terminate(nil)
+            return
+        }
+        store.mode = .custom
+        var d = SongDraft()
+        d.title = req.title ?? ""
+        d.style = req.style
+        d.lyrics = req.lyrics
+        d.duration = req.duration ?? 60
+        d.voice = Voice(rawValue: req.voice ?? "male") ?? .male
+        d.language = req.language ?? "de"
+        store.draft = d
+        let knownTracks = Set(store.tracks.map(\.id))
+        let knownFailed = Set(store.failed.map(\.id))
+        store.create()
+        store.draft = SongDraft()
+        Task { @MainActor in
+            let deadline = Date().addingTimeInterval(45 * 60)
+            while Date() < deadline {
+                try? await Task.sleep(for: .seconds(3))
+                if let t = store.tracks.first(where: { !knownTracks.contains($0.id) }) {
+                    let dest = URL(fileURLWithPath: req.out)
+                    try? FileManager.default.removeItem(at: dest)
+                    do {
+                        try FileManager.default.copyItem(at: t.url, to: dest)
+                        finish(["ok": true, "out": req.out, "title": t.title, "style": t.style, "lyrics": t.lyrics], req.status)
+                    } catch {
+                        finish(["ok": false, "error": "copy failed: \(error.localizedDescription)"], req.status)
+                    }
+                    return
+                }
+                if let j = store.failed.first(where: { !knownFailed.contains($0.id) }) {
+                    finish(["ok": false, "error": j.error ?? "generation failed"], req.status)
+                    return
+                }
+            }
+            finish(["ok": false, "error": "timeout"], req.status)
         }
     }
 
